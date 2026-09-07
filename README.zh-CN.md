@@ -6,13 +6,13 @@
 
 ## 运行
 
-在项目根目录（`revenue-250-20260907`）运行：
+在本独立服务分支的根目录运行：
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -r service/requirements.txt
-.venv/bin/python service/clean_tables.py service/sample/batch-a.csv service/sample/batch-b.csv --config service/sample/config.json --out service/my-demo-output
-.venv/bin/python -m unittest discover -s service -p 'test_*.py' -v
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python clean_tables.py sample/batch-a.csv sample/batch-b.csv --config sample/config.json --out my-demo-output
+.venv/bin/python -m unittest discover -p 'test_*.py' -v
 ```
 
 输出目录必须不存在；不覆盖输入或上一次交付。程序运行期间不发送数据到网络，也不需要 AI API。依赖安装需要下载公开 Python 包。
