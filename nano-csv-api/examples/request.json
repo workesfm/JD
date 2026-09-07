@@ -1,0 +1,9 @@
+{
+  "csv": "name,email\n Alice ,a@example.test\nAlice,a@example.test\nBob,\nCara,c@example.test\n",
+  "required_columns": [
+    "name",
+    "email"
+  ],
+  "trim": true,
+  "deduplicate": true
+}
