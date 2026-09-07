@@ -1,0 +1,11 @@
+{
+  "block": {
+    "account": "nano_1e5aqegc1jb7qe964u4adzmcezyo6o146zb8hm6dft8tkp79za3sxwjym5rx",
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "representative": "nano_1e5aqegc1jb7qe964u4adzmcezyo6o146zb8hm6dft8tkp79za3sxwjym5rx",
+    "balance": "123456789012345678901234567890",
+    "link": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "type": "state"
+  },
+  "expected_hash": "E460A8E2C2A32AFC4C5D27F253AED9B3B4336C7853F6D3914DCEE89F5B2A4E0B"
+}
