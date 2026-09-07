@@ -1,0 +1,6 @@
+﻿record_id,date,amount,currency,description,source_file,source_record
+0001,2026-09-01,120.00,USD,Synthetic sale A,batch-a.csv,2
+0003,2026-09-02,-10.00,USD,Synthetic refund,batch-a.csv,4
+0004,2026-09-02,88.00,CNY,Synthetic sale C,batch-a.csv,5
+0007,2026-09-03,0.10,USD,Decimal sample A,batch-b.csv,4
+0008,2026-09-03,0.20,USD,'=1+1,batch-b.csv,5

@@ -1,0 +1,7 @@
+record_id,date,amount,currency,description
+0001,2026-09-01,120.00,USD,Synthetic sale A
+0002,2026/09/01,25.50,USD,Synthetic sale B
+0003,2026-09-02,-10.00,USD,Synthetic refund
+0004,2026-09-02,88.00,CNY,Synthetic sale C
+0005,03/04/2026,45.00,USD,Unapproved date format
+0006,2026-09-03,bad,USD,Invalid amount

@@ -1,0 +1,94 @@
+{
+  "checked_at_utc": "2026-09-07T04:53:50.927733+00:00",
+  "python": "3.11.2",
+  "openpyxl": "3.1.5",
+  "unit_tests": {
+    "command": ".venv/bin/python -m unittest discover -s service -p test_*.py -v",
+    "result": "9 passed, 0 failures (observed in preceding test run)"
+  },
+  "sample": {
+    "input_records": 12,
+    "accepted_records": 5,
+    "duplicate_records": 1,
+    "exception_records": 6,
+    "accepted_totals_by_currency": {
+      "CNY": "88.00",
+      "USD": "110.30"
+    },
+    "generated_at_utc": "2026-09-07T04:51:28.628411+00:00",
+    "inputs": [
+      {
+        "filename": "batch-a.csv",
+        "bytes": 305,
+        "sha256": "fea72de430369d34db977fef20f72b5c4663d4cd30f4a7470f74f72791243ff2",
+        "header": [
+          "record_id",
+          "date",
+          "amount",
+          "currency",
+          "description"
+        ]
+      },
+      {
+        "filename": "batch-b.csv",
+        "bytes": 280,
+        "sha256": "01bd83803f73fe73720d2972af0d3870a2efc785350853fa97472ba245ddf35c",
+        "header": [
+          "订单号",
+          "日期",
+          "金额",
+          "币种",
+          "说明"
+        ]
+      }
+    ],
+    "config_sha256": "363b29c83eab90635748b7705a2f33fe566e5200139e0ae037a23615cf60f17d",
+    "rules": {
+      "columns": {
+        "record_id": [
+          "record_id",
+          "订单号"
+        ],
+        "date": [
+          "date",
+          "日期"
+        ],
+        "amount": [
+          "amount",
+          "金额"
+        ],
+        "currency": [
+          "currency",
+          "币种"
+        ],
+        "description": [
+          "description",
+          "说明"
+        ]
+      },
+      "date_formats": [
+        "%Y-%m-%d",
+        "%Y/%m/%d"
+      ],
+      "currencies": [
+        "USD",
+        "CNY",
+        "EUR",
+        "GBP"
+      ],
+      "encoding": "utf-8-sig",
+      "max_rows": 50000
+    },
+    "limits": "Flat tables; no formulas evaluated, currency conversion or OCR. Summary covers accepted rows only."
+  },
+  "capacity_check": {
+    "input_records": 50000,
+    "accepted_records": 50000,
+    "exact_usd_total": "500.00",
+    "xlsx_rows_including_header": 50001,
+    "elapsed_seconds": 4.164,
+    "xlsx_bytes": 1398165
+  },
+  "code_sha256": "3079d629d5f937f41b0ce1836cc66eb8088ba2c152bab8c6300f23562ad1d6bf",
+  "limits": "Synthetic inputs only; no customer data or customer acceptance verified."
+}

@@ -1,0 +1,13 @@
+{
+  "columns": {
+    "record_id": ["record_id", "订单号"],
+    "date": ["date", "日期"],
+    "amount": ["amount", "金额"],
+    "currency": ["currency", "币种"],
+    "description": ["description", "说明"]
+  },
+  "date_formats": ["%Y-%m-%d", "%Y/%m/%d"],
+  "currencies": ["USD", "CNY", "EUR", "GBP"],
+  "encoding": "utf-8-sig",
+  "max_rows": 50000
+}

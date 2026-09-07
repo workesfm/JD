@@ -1,0 +1,2 @@
+﻿source_file,source_record,record_id,reason,retained_source,original_values_json,mapped_values_json
+batch-b.csv,2,0001,exact_duplicate_after_normalization,batch-a.csv:2,"[""0001"", ""2026/09/01"", ""120"", ""usd"", ""Synthetic sale A""]","{""record_id"": ""0001"", ""date"": ""2026/09/01"", ""amount"": ""120"", ""currency"": ""usd"", ""description"": ""Synthetic sale A""}"

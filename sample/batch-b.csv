@@ -1,0 +1,7 @@
+订单号,日期,金额,币种,说明
+0001,2026/09/01,120,usd,Synthetic sale A
+0002,2026-09-01,26.50,USD,Synthetic sale B
+0007,2026-09-03,0.10,USD,Decimal sample A
+0008,2026-09-03,0.20,USD,=1+1
+0009,2026-09-03,1.234,USD,Unapproved precision
+0010,2026-09-03,5.00,,Missing currency
