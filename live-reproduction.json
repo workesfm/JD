@@ -1,0 +1,40 @@
+{
+  "baseline": {
+    "query": "query { item(id:\"1533010\") { id user { name } } }",
+    "data": {
+      "item": {
+        "id": "1533010",
+        "user": {
+          "name": "onlybugs05"
+        }
+      }
+    },
+    "errors": []
+  },
+  "failure": {
+    "query": "query { item(id:\"1533010\") { id user { name createdAt } } }",
+    "data": {
+      "item": null
+    },
+    "errors": [
+      {
+        "message": "Cannot return null for non-nullable field User.createdAt.",
+        "path": [
+          "item",
+          "user",
+          "createdAt"
+        ]
+      }
+    ]
+  },
+  "direct_user": {
+    "query": "query { user(name:\"onlybugs05\") { name createdAt } }",
+    "data": {
+      "user": {
+        "name": "onlybugs05",
+        "createdAt": "2026-07-19T07:18:59.451Z"
+      }
+    },
+    "errors": []
+  }
+}

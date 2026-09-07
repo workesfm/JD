@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/stackernews/stacker.news",
+  "ref": "d4aaf0ac28e3a1cd2b2b6ed0fbd3647c0e1a5422",
+  "purpose": "Candidate paid contribution; not accepted or paid.",
+  "files": [
+    {
+      "path": "api/resolvers/user.js",
+      "sha256": "6dd30f8175f70f9c1d3d477eb3ddf1d2ccb03257238483719930a9b28e59e2a7"
+    },
+    {
+      "path": "api/typeDefs/user.js",
+      "sha256": "acfa5f98173bea8c3b44702dd735a3dc10969c48880c0f50c0b7772611a02146"
+    }
+  ]
+}

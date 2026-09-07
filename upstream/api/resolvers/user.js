@@ -1,0 +1,1126 @@
+import { readFile } from 'fs/promises'
+import { join, resolve } from 'path'
+import { decodeCursor, LIMIT, nextCursorEncoded } from '@/lib/cursor'
+import { msatsToSats } from '@/lib/format'
+import { bioSchema, settingsSchema, validateSchema, userSchema } from '@/lib/validate'
+import { getItem, updateItem, filterSql, createItem, whereSql, muteSql, activeOrMineSql, paidItemSql } from './item'
+import { USER_ID, PAY_IN_NOTIFICATION_TYPES, WALLET_RETRY_BEFORE_MS, WALLET_MAX_RETRIES, SN_SYSTEM_ONLY_IDS, FREE_COMMENTS_PER_MONTH } from '@/lib/constants'
+import { timeUnitForRange, whenRange } from '@/lib/time'
+import assertApiKeyNotPermitted from './apiKey'
+import { isMuted } from '@/lib/user'
+import { GqlAuthenticationError, GqlAuthorizationError, GqlInputError } from '@/lib/error'
+import { processCrop } from '@/lib/imgproxy'
+import { payInTypesSql } from '../payIn/lib/sql'
+import { Prisma } from '@prisma/client'
+
+const contributors = new Set()
+
+const loadContributors = async (set) => {
+  try {
+    const fileContent = await readFile(resolve(join(process.cwd(), 'contributors.txt')), 'utf-8')
+    fileContent.split('\n')
+      .map(line => line.trim())
+      .filter(line => !!line)
+      .forEach(name => set.add(name))
+  } catch (err) {
+    console.error('Error loading contributors', err)
+  }
+}
+
+const DEFAULT_NAME_SIMILARITY = 0.1
+
+function clampNameSimilarity (similarity = DEFAULT_NAME_SIMILARITY) {
+  const threshold = Number(similarity)
+  if (!Number.isFinite(threshold)) {
+    return DEFAULT_NAME_SIMILARITY
+  }
+
+  return Math.max(0, Math.min(threshold, 1))
+}
+
+async function authMethods (user, args, { models, me }) {
+  if (!me || me.id !== user.id) {
+    return {
+      lightning: false,
+      twitter: false,
+      github: false,
+      nostr: false
+    }
+  }
+
+  const accounts = await models.account.findMany({
+    where: {
+      userId: me.id
+    }
+  })
+
+  const oauth = accounts.map(a => a.provider)
+
+  return {
+    lightning: !!user.pubkey,
+    email: !!(user.emailVerified && user.emailHash),
+    twitter: oauth.indexOf('twitter') >= 0,
+    github: oauth.indexOf('github') >= 0,
+    nostr: !!user.nostrAuthPubkey,
+    apiKey: user.apiKeyEnabled ? !!user.apiKeyHash : null
+  }
+}
+
+export async function topUsers (parent, { cursor, when, by = 'stacked', from, to, limit }, { models, me }) {
+  const decodedCursor = decodeCursor(cursor)
+  const [fromDate, toDate] = whenRange(when, from, to || decodeCursor.time)
+  const granularity = timeUnitForRange([fromDate, toDate]).toUpperCase()
+
+  let column
+  switch (by) {
+    case 'stacked':
+      column = Prisma.sql`stacked`; break
+    case 'spent':
+      column = Prisma.sql`spent`; break
+    case 'items':
+      column = Prisma.sql`nitems`; break
+    case 'streak':
+      column = Prisma.sql`streak`; break
+    default:
+      throw new GqlInputError('invalid sort')
+  }
+
+  const users = (await models.$queryRaw`
+    WITH user_outgoing AS (
+      SELECT "AggPayIn"."userId", floor(sum("AggPayIn"."sumMcost") / 1000) as spent,
+        sum("AggPayIn"."countGroup") FILTER (WHERE "AggPayIn"."payInType" = 'ITEM_CREATE') as nitems
+      FROM "AggPayIn"
+      WHERE "AggPayIn"."timeBucket" >= ${fromDate}
+      AND "AggPayIn"."timeBucket" <= ${toDate}
+      AND "AggPayIn"."granularity" = ${granularity}::"AggGranularity"
+      AND "AggPayIn"."payInType" NOT IN ('WITHDRAWAL', 'AUTO_WITHDRAWAL', 'PROXY_PAYMENT', 'BUY_CREDITS')
+      AND "AggPayIn"."slice" = 'USER_BY_TYPE'
+      GROUP BY "AggPayIn"."userId"
+    ),
+    user_incoming AS (
+      SELECT "AggPayOut"."userId", floor(sum("AggPayOut"."sumMtokens") / 1000) as stacked
+      FROM "AggPayOut"
+      WHERE "AggPayOut"."timeBucket" >= ${fromDate}
+      AND "AggPayOut"."timeBucket" <= ${toDate}
+      AND "AggPayOut"."granularity" = ${granularity}::"AggGranularity"
+      AND "AggPayOut"."slice" = 'USER_BY_TYPE'
+      AND "AggPayOut"."payInType" IS NOT NULL
+      AND "AggPayOut"."payInType" NOT IN ('WITHDRAWAL', 'AUTO_WITHDRAWAL', 'PROXY_PAYMENT', 'BUY_CREDITS')
+      GROUP BY "AggPayOut"."userId"
+    ),
+    user_stats AS (
+      SELECT COALESCE(user_outgoing."userId", user_incoming."userId") as "userId", COALESCE(user_outgoing."spent", 0) as spent,
+        COALESCE(user_outgoing."nitems", 0) as nitems, COALESCE(user_incoming."stacked", 0) as stacked
+      FROM user_outgoing
+      FULL JOIN user_incoming ON user_outgoing."userId" = user_incoming."userId"
+    )
+    SELECT * FROM user_stats
+    JOIN users ON user_stats."userId" = users.id
+    WHERE users.id NOT IN (${Prisma.join([...SN_SYSTEM_ONLY_IDS, USER_ID.anon])})
+    ORDER BY ${column} DESC NULLS LAST, users.created_at ASC
+    OFFSET ${decodedCursor.offset}
+    LIMIT ${limit}`
+  ).map(
+    u => u.hideFromTopUsers && (!me || me.id !== u.id) ? null : u
+  )
+
+  return {
+    cursor: users.length === limit ? nextCursorEncoded(decodedCursor, limit) : null,
+    users
+  }
+}
+
+export default {
+  Query: {
+    me: async (parent, args, { models, me, userLoader }) => {
+      if (!me?.id) {
+        return null
+      }
+
+      return await userLoader.load(me.id)
+    },
+    settings: async (parent, args, { models, me, userLoader }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      return await userLoader.load(me.id)
+    },
+    user: async (parent, { id, name }, { models }) => {
+      if (id) id = Number(id)
+      if (!id && !name) {
+        throw new GqlInputError('id or name is required')
+      }
+      return await models.user.findUnique({ where: { id, name } })
+    },
+    nameAvailable: async (parent, { name }, { models, me, userLoader }) => {
+      let user
+      if (me) {
+        user = await userLoader.load(me.id)
+      }
+      return user?.name?.toUpperCase() === name?.toUpperCase() || !(await models.user.findUnique({ where: { name } }))
+    },
+    mySubscribedUsers: async (parent, { cursor }, { models, me }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      const decodedCursor = decodeCursor(cursor)
+      const users = await models.$queryRaw`
+        SELECT users.*
+        FROM "UserSubscription"
+        JOIN users ON "UserSubscription"."followeeId" = users.id
+        WHERE "UserSubscription"."followerId" = ${me.id}
+        AND ("UserSubscription"."postsSubscribedAt" IS NOT NULL OR "UserSubscription"."commentsSubscribedAt" IS NOT NULL)
+        ORDER BY "UserSubscription"."followeeId" ASC
+        OFFSET ${decodedCursor.offset}
+        LIMIT ${LIMIT}
+      `
+
+      return {
+        cursor: users.length === LIMIT ? nextCursorEncoded(decodedCursor) : null,
+        users
+      }
+    },
+    myMutedUsers: async (parent, { cursor }, { models, me }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      const decodedCursor = decodeCursor(cursor)
+      const users = await models.$queryRaw`
+        SELECT users.*
+        FROM "Mute"
+        JOIN users ON "Mute"."mutedId" = users.id
+        WHERE "Mute"."muterId" = ${me.id}
+        ORDER BY "Mute"."mutedId" ASC
+        OFFSET ${decodedCursor.offset}
+        LIMIT ${LIMIT}
+      `
+
+      return {
+        cursor: users.length === LIMIT ? nextCursorEncoded(decodedCursor) : null,
+        users
+      }
+    },
+    topCowboys: async (parent, { cursor }, { models, me }) => {
+      const { users, cursor: topCowboysCursor } = await topUsers(parent, { cursor, when: 'forever', by: 'streak', limit: LIMIT }, { models, me })
+      const cowboys = users.map(u => (u?.hideCowboyHat && (!me || me.id !== u.id)) ? null : u).filter(u => u?.streak !== null)
+      return {
+        cursor: cowboys.length === LIMIT ? topCowboysCursor : null,
+        users: cowboys
+      }
+    },
+    userSuggestions: async (parent, { q, limit }, { models }) => {
+      let users = []
+      if (q) {
+        users = await models.$queryRaw`
+          SELECT name
+          FROM search_users_by_name(${q}::text, ${DEFAULT_NAME_SIMILARITY}::real, ${Number(limit)}::integer)`
+      } else {
+        users = await models.$queryRaw`
+          SELECT name
+          FROM "AggPayOut"
+          JOIN users on users.id = "AggPayOut"."userId"
+          WHERE NOT users."hideFromTopUsers"
+          AND "AggPayOut"."slice" = 'USER_TOTAL'
+          AND "AggPayOut"."granularity" = 'HOUR'
+          AND "AggPayOut"."timeBucket" = (
+            SELECT max("timeBucket")
+            FROM "AggPayOut"
+            WHERE "AggPayOut"."slice" = 'USER_TOTAL'
+            AND "AggPayOut"."granularity" = 'HOUR'
+          )
+          ORDER BY "AggPayOut"."sumMtokens" DESC, users.created_at ASC
+          LIMIT ${limit}`
+      }
+
+      return users
+    },
+    topUsers,
+    hasNewNotes: async (parent, args, ctx) => {
+      const { me, models, userLoader } = ctx
+      if (!me) {
+        return false
+      }
+      const user = await userLoader.load(me.id)
+      const lastChecked = user.checkedNotesAt || new Date(0)
+
+      // if we've already recorded finding notes after they last checked, return true
+      // this saves us from rechecking notifications
+      if (user.foundNotesAt > lastChecked) {
+        return true
+      }
+
+      // this is a performance optimization, so we don't want to block the connection
+      // by trying to update the user if the user is locked
+      const foundNotes = () => {
+        models.$queryRaw`
+          UPDATE users
+          SET "foundNotesAt" = now(), "lastSeenAt" = now()
+          WHERE "id" = (
+            SELECT "id" FROM users WHERE "id" = ${me.id}
+            -- non-key best-effort update: NO KEY UPDATE skips only on real writers,
+            -- not on benign KEY SHARE FK-insert locks, and never blocks (SKIP LOCKED)
+            FOR NO KEY UPDATE SKIP LOCKED
+          )`.catch(console.error)
+      }
+
+      const [newBulletin] = await models.$queryRawUnsafe(`
+        SELECT EXISTS(
+          SELECT *
+          FROM "NotificationBulletin"
+          WHERE "NotificationBulletin"."created_at" > $1)`, lastChecked)
+      if (newBulletin.exists) {
+        foundNotes()
+        return true
+      }
+
+      // check if any votes have been cast for them since checkedNotesAt
+      if (user.noteItemSats) {
+        const [newSats] = await models.$queryRawUnsafe(`
+          SELECT EXISTS(
+            SELECT *
+            FROM "Item"
+            WHERE "Item"."lastZapAt" > $2
+            AND "Item"."userId" = $1)`, me.id, lastChecked)
+        if (newSats.exists) {
+          foundNotes()
+          return true
+        }
+
+        const [newBounty] = await models.$queryRawUnsafe(`
+          SELECT EXISTS(
+            SELECT *
+            FROM "PayIn"
+            JOIN "PayOutBolt11" ON "PayOutBolt11"."payInId" = "PayIn".id
+            WHERE "PayIn"."payInType" = 'BOUNTY_PAYMENT'
+            AND "PayIn"."payInState" = 'PAID'
+            AND "PayOutBolt11"."userId" = $1
+            AND "PayIn"."payInStateChangedAt" > $2)`, me.id, lastChecked)
+        if (newBounty.exists) {
+          foundNotes()
+          return true
+        }
+      }
+
+      const itemFilter = await filterSql(null, null, null, ctx)
+
+      // break out thread subscription to decrease the search space of the already expensive reply query
+      const [newThreadSubReply] = await models.$queryRaw(Prisma.sql`
+        SELECT EXISTS(
+          SELECT *
+          FROM "ThreadSubscription"
+          JOIN "Reply" r ON "ThreadSubscription"."itemId" = r."ancestorId"
+          JOIN "Item" ON r."itemId" = "Item".id
+          ${whereSql(
+            Prisma.sql`"ThreadSubscription"."userId" = ${me.id}::INTEGER`,
+            Prisma.sql`r.created_at > ${lastChecked}::TIMESTAMP`,
+            Prisma.sql`r.created_at >= "ThreadSubscription".created_at`,
+            Prisma.sql`r."userId" <> ${me.id}::INTEGER`,
+            Prisma.sql`"Item"."deletedAt" IS NULL`,
+            activeOrMineSql(me),
+            itemFilter,
+            muteSql(me),
+            user.noteAllDescendants ? null : Prisma.sql`r.level = 1`
+          )})`)
+      if (newThreadSubReply.exists) {
+        foundNotes()
+        return true
+      }
+
+      const [newUserSubs] = await models.$queryRaw(Prisma.sql`
+        SELECT EXISTS(
+          SELECT *
+          FROM "UserSubscription"
+          JOIN "Item" ON "UserSubscription"."followeeId" = "Item"."userId"
+          ${whereSql(
+            Prisma.sql`"UserSubscription"."followerId" = ${me.id}::INTEGER`,
+            Prisma.sql`"Item".created_at > ${lastChecked}::TIMESTAMP`,
+            Prisma.sql`(
+              ("Item"."parentId" IS NULL AND "UserSubscription"."postsSubscribedAt" IS NOT NULL AND "Item".created_at >= "UserSubscription"."postsSubscribedAt")
+              OR ("Item"."parentId" IS NOT NULL AND "UserSubscription"."commentsSubscribedAt" IS NOT NULL AND "Item".created_at >= "UserSubscription"."commentsSubscribedAt")
+            )`,
+            paidItemSql(me),
+            activeOrMineSql(me),
+            itemFilter,
+            muteSql(me))})`)
+      if (newUserSubs.exists) {
+        foundNotes()
+        return true
+      }
+
+      const [newSubPost] = await models.$queryRaw(Prisma.sql`
+        SELECT EXISTS(
+          SELECT *
+          FROM "SubSubscription"
+          JOIN "Item" ON "Item"."subNames" @> ARRAY["SubSubscription"."subName"]::CITEXT[]
+          ${whereSql(
+            Prisma.sql`"SubSubscription"."userId" = ${me.id}::INTEGER`,
+            Prisma.sql`"Item".created_at > ${lastChecked}::TIMESTAMP`,
+            Prisma.sql`"Item"."parentId" IS NULL`,
+            Prisma.sql`"Item"."userId" <> ${me.id}::INTEGER`,
+            paidItemSql(me),
+            activeOrMineSql(me),
+            itemFilter,
+            muteSql(me))})`)
+      if (newSubPost.exists) {
+        foundNotes()
+        return true
+      }
+
+      // check if they have any mentions since checkedNotesAt
+      if (user.noteMentions) {
+        const [newMentions] = await models.$queryRaw(Prisma.sql`
+        SELECT EXISTS(
+          SELECT *
+          FROM "Mention"
+          JOIN "Item" ON "Mention"."itemId" = "Item".id
+          ${whereSql(
+            Prisma.sql`"Mention"."userId" = ${me.id}::INTEGER`,
+            Prisma.sql`"Mention".created_at > ${lastChecked}::TIMESTAMP`,
+            Prisma.sql`"Item"."userId" <> ${me.id}::INTEGER`,
+            activeOrMineSql(me),
+            itemFilter,
+            muteSql(me)
+          )})`)
+        if (newMentions.exists) {
+          foundNotes()
+          return true
+        }
+      }
+
+      if (user.noteItemMentions) {
+        const [newMentions] = await models.$queryRaw(Prisma.sql`
+        SELECT EXISTS(
+          SELECT *
+          FROM "ItemMention"
+          JOIN "Item" ON "ItemMention"."referrerId" = "Item".id
+          ${whereSql(
+            Prisma.sql`"ItemMention".created_at > ${lastChecked}::TIMESTAMP`,
+            Prisma.sql`"Item"."userId" <> ${me.id}::INTEGER`,
+            Prisma.sql`"ItemMention"."refereeUserId" = ${me.id}::INTEGER`,
+            activeOrMineSql(me),
+            itemFilter,
+            muteSql(me)
+          )})`)
+        if (newMentions.exists) {
+          foundNotes()
+          return true
+        }
+      }
+
+      if (user.noteForwardedSats) {
+        const [newFwdSats] = await models.$queryRaw(Prisma.sql`
+        SELECT EXISTS(
+          SELECT *
+          FROM "Item"
+          JOIN "ItemForward" ON
+            "ItemForward"."itemId" = "Item".id
+            AND "ItemForward"."userId" = ${me.id}::INTEGER
+          ${whereSql(
+            Prisma.sql`"Item"."lastZapAt" > ${lastChecked}::TIMESTAMP`,
+            Prisma.sql`"Item"."userId" <> ${me.id}::INTEGER`,
+            activeOrMineSql(me),
+            itemFilter,
+            muteSql(me)
+          )})`)
+        if (newFwdSats.exists) {
+          foundNotes()
+          return true
+        }
+      }
+
+      if (user.noteEarning) {
+        const earn = await models.earn.findFirst({
+          where: {
+            userId: me.id,
+            createdAt: {
+              gt: lastChecked
+            },
+            msats: {
+              gte: 1000
+            }
+          }
+        })
+        if (earn) {
+          foundNotes()
+          return true
+        }
+      }
+
+      if (user.noteDeposits) {
+        const proxyPayment = await models.payIn.findFirst({
+          where: {
+            userId: me.id,
+            payInState: 'PAID',
+            payInStateChangedAt: {
+              gt: lastChecked
+            },
+            payInType: 'PROXY_PAYMENT'
+          }
+        })
+        if (proxyPayment) {
+          foundNotes()
+          return true
+        }
+
+        const externalReceive = await models.externalTransaction.findFirst({
+          where: {
+            userId: me.id,
+            direction: 'RECEIVE',
+            outcome: 'SETTLED',
+            updatedAt: {
+              gt: lastChecked
+            }
+          }
+        })
+        if (externalReceive) {
+          foundNotes()
+          return true
+        }
+      }
+
+      if (user.noteWithdrawals) {
+        const withdrawal = await models.payIn.findFirst({
+          where: {
+            userId: me.id,
+            payInState: 'PAID',
+            payInStateChangedAt: {
+              gt: lastChecked
+            },
+            payInType: {
+              in: ['WITHDRAWAL', 'AUTO_WITHDRAWAL']
+            }
+          }
+        })
+        if (withdrawal) {
+          foundNotes()
+          return true
+        }
+      }
+
+      // check if new invites have been redeemed
+      if (user.noteInvites) {
+        const [newInvites] = await models.$queryRawUnsafe(`
+          SELECT EXISTS(
+            SELECT *
+            FROM users JOIN "Invite" on users."inviteId" = "Invite".id
+            WHERE "Invite"."userId" = $1
+            AND users.created_at > $2)`, me.id, lastChecked)
+        if (newInvites.exists) {
+          foundNotes()
+          return true
+        }
+
+        const referral = await models.user.findFirst({
+          where: {
+            referrerId: me.id,
+            createdAt: {
+              gt: lastChecked
+            }
+          }
+        })
+        if (referral) {
+          foundNotes()
+          return true
+        }
+      }
+
+      if (user.noteCowboyHat) {
+        const streak = await models.streak.findFirst({
+          where: {
+            userId: me.id,
+            updatedAt: {
+              gt: lastChecked
+            }
+          }
+        })
+
+        if (streak) {
+          foundNotes()
+          return true
+        }
+      }
+
+      const subStatus = await models.sub.findFirst({
+        where: {
+          userId: me.id,
+          statusUpdatedAt: {
+            gt: lastChecked
+          },
+          status: {
+            not: 'ACTIVE'
+          }
+        }
+      })
+
+      if (subStatus) {
+        foundNotes()
+        return true
+      }
+
+      const newReminder = await models.reminder.findFirst({
+        where: {
+          userId: me.id,
+          remindAt: {
+            gt: lastChecked,
+            lt: new Date()
+          }
+        }
+      })
+      if (newReminder) {
+        foundNotes()
+        return true
+      }
+
+      const [invoiceActionFailed] = await models.$queryRaw`
+        SELECT EXISTS(
+          SELECT *
+          FROM "PayIn"
+          WHERE "PayIn"."payInState" = 'FAILED'
+          AND "PayIn"."payInType" IN (${payInTypesSql(PAY_IN_NOTIFICATION_TYPES)})
+          AND "PayIn"."userId" = ${me.id}
+          AND "PayIn"."successorId" IS NULL
+          -- help the query planner by narrowing the range of the timestamp
+          AND "PayIn"."payInStateChangedAt" > ${lastChecked}::timestamp - ${`${WALLET_RETRY_BEFORE_MS} milliseconds`}::interval
+          AND (
+            (
+              "PayIn"."payInFailureReason" = 'USER_CANCELLED'
+              AND "PayIn"."payInStateChangedAt" > ${lastChecked}::timestamp
+            )
+            OR (
+              "PayIn"."payInStateChangedAt" <= now() - ${`${WALLET_RETRY_BEFORE_MS} milliseconds`}::interval
+              AND "PayIn"."payInStateChangedAt" > ${lastChecked}::timestamp - ${`${WALLET_RETRY_BEFORE_MS} milliseconds`}::interval
+            )
+            OR (
+              "PayIn"."retryCount" >= ${WALLET_MAX_RETRIES}
+              AND "PayIn"."payInStateChangedAt" > ${lastChecked}::timestamp
+            )
+          )
+        )`
+
+      if (invoiceActionFailed.exists) {
+        foundNotes()
+        return true
+      }
+
+      // update checkedNotesAt to prevent rechecking same time period
+      models.$queryRaw`
+        UPDATE users
+        SET "checkedNotesAt" = now(), "lastSeenAt" = now()
+        WHERE "id" = (
+          SELECT "id" FROM users WHERE "id" = ${me.id}
+          -- non-key best-effort update: NO KEY UPDATE skips only on real writers,
+          -- not on benign KEY SHARE FK-insert locks, and never blocks (SKIP LOCKED)
+          FOR NO KEY UPDATE SKIP LOCKED
+        )`.catch(console.error)
+
+      return false
+    },
+    searchUsers: async (parent, { q, limit, similarity }, { models }) => {
+      return await models.$queryRaw`
+        SELECT *
+        FROM search_users_by_name(${q}::text, ${clampNameSimilarity(similarity)}::real, ${Number(limit)}::integer)`
+    }
+  },
+
+  Mutation: {
+    setName: async (parent, data, { me, models }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      await validateSchema(userSchema, data, { models })
+
+      try {
+        await models.user.update({ where: { id: me.id }, data })
+        return data.name
+      } catch (error) {
+        if (error.code === 'P2002') {
+          throw new GqlInputError('name taken')
+        }
+        throw error
+      }
+    },
+    setSettings: async (parent, { settings: { nostrRelays, ...data } }, { me, models }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      await validateSchema(settingsSchema, { nostrRelays, ...data })
+
+      if (nostrRelays?.length) {
+        const connectOrCreate = []
+        for (const nr of nostrRelays) {
+          await models.nostrRelay.upsert({
+            where: { addr: nr },
+            update: { addr: nr },
+            create: { addr: nr }
+          })
+          connectOrCreate.push({
+            where: { userId_nostrRelayAddr: { userId: me.id, nostrRelayAddr: nr } },
+            create: { nostrRelayAddr: nr }
+          })
+        }
+
+        return await models.user.update({ where: { id: me.id }, data: { ...data, nostrRelays: { deleteMany: {}, connectOrCreate } } })
+      } else {
+        return await models.user.update({ where: { id: me.id }, data: { ...data, nostrRelays: { deleteMany: {} } } })
+      }
+    },
+    setWalkthrough: async (parent, { upvotePopover, tipPopover }, { me, models }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      await models.user.update({ where: { id: me.id }, data: { upvotePopover, tipPopover } })
+
+      return true
+    },
+    cropPhoto: async (parent, { photoId, cropData }, { me, models }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      const croppedUrl = await processCrop({ photoId: Number(photoId), cropData })
+      if (!croppedUrl) {
+        throw new GqlInputError('can\'t crop photo')
+      }
+
+      return croppedUrl
+    },
+    setPhoto: async (parent, { photoId }, { me, models }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      await models.user.update({
+        where: { id: me.id },
+        data: { photoId: Number(photoId) }
+      })
+
+      return Number(photoId)
+    },
+    upsertBio: async (parent, { text, sendProtocolId }, { me, models, lnd, userLoader }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      await validateSchema(bioSchema, { text })
+
+      const user = await userLoader.load(me.id)
+
+      if (user.bioId) {
+        return await updateItem(parent, { id: user.bioId, bio: true, text, title: `@${user.name}'s bio`, sendProtocolId }, { me, models, lnd })
+      } else {
+        return await createItem(parent, { bio: true, text, title: `@${user.name}'s bio`, sendProtocolId }, { me, models, lnd })
+      }
+    },
+    generateApiKey: async (parent, { id }, { models, me, userLoader }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      const user = await userLoader.load(me.id)
+      if (!user.apiKeyEnabled) {
+        throw new GqlAuthorizationError('you are not allowed to generate api keys')
+      }
+
+      // I trust postgres CSPRNG more than the one from JS
+      const [{ apiKey, apiKeyHash }] = await models.$queryRaw`
+      SELECT "apiKey", encode(digest("apiKey", 'sha256'), 'hex') AS "apiKeyHash"
+      FROM (
+        SELECT encode(gen_random_bytes(32), 'base64')::CHAR(32) as "apiKey"
+      ) rng`
+      await models.user.update({ where: { id: me.id }, data: { apiKeyHash } })
+
+      return apiKey
+    },
+    deleteApiKey: async (parent, { id }, { models, me }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+
+      return await models.user.update({ where: { id: me.id }, data: { apiKeyHash: null } })
+    },
+    unlinkAuth: async (parent, { authType }, { models, me, userLoader }) => {
+      if (!me) {
+        throw new GqlAuthenticationError()
+      }
+      assertApiKeyNotPermitted({ me })
+
+      let user
+      if (authType === 'twitter' || authType === 'github') {
+        user = await userLoader.load(me.id)
+        const account = await models.account.findFirst({ where: { userId: me.id, provider: authType } })
+        if (!account) {
+          throw new GqlInputError('no such account')
+        }
+        await models.account.delete({ where: { id: account.id } })
+        if (authType === 'twitter') {
+          await models.user.update({ where: { id: me.id }, data: { hideTwitter: true, twitterId: null } })
+        } else {
+          await models.user.update({ where: { id: me.id }, data: { hideGithub: true, githubId: null } })
+        }
+      } else if (authType === 'lightning') {
+        user = await models.user.update({ where: { id: me.id }, data: { pubkey: null } })
+      } else if (authType === 'nostr') {
+        user = await models.user.update({ where: { id: me.id }, data: { hideNostr: true, nostrAuthPubkey: null } })
+      } else if (authType === 'email') {
+        user = await models.user.update({ where: { id: me.id }, data: { email: null, emailVerified: null, emailHash: null } })
+      } else {
+        throw new GqlInputError('no such account')
+      }
+
+      return await authMethods(user, undefined, { models, me })
+    },
+    subscribeUserPosts: async (parent, { id }, { me, models }) => {
+      const lookupData = { followerId: Number(me.id), followeeId: Number(id) }
+      const existing = await models.userSubscription.findUnique({ where: { followerId_followeeId: lookupData } })
+      const muted = await isMuted({ models, muterId: me?.id, mutedId: id })
+      if (existing) {
+        if (muted && !existing.postsSubscribedAt) {
+          throw new GqlInputError("you can't subscribe to a stacker that you've muted")
+        }
+        await models.userSubscription.update({ where: { followerId_followeeId: lookupData }, data: { postsSubscribedAt: existing.postsSubscribedAt ? null : new Date() } })
+      } else {
+        if (muted) {
+          throw new GqlInputError("you can't subscribe to a stacker that you've muted")
+        }
+        await models.userSubscription.create({ data: { ...lookupData, postsSubscribedAt: new Date() } })
+      }
+      return { id }
+    },
+    subscribeUserComments: async (parent, { id }, { me, models }) => {
+      const lookupData = { followerId: Number(me.id), followeeId: Number(id) }
+      const existing = await models.userSubscription.findUnique({ where: { followerId_followeeId: lookupData } })
+      const muted = await isMuted({ models, muterId: me?.id, mutedId: id })
+      if (existing) {
+        if (muted && !existing.commentsSubscribedAt) {
+          throw new GqlInputError("you can't subscribe to a stacker that you've muted")
+        }
+        await models.userSubscription.update({ where: { followerId_followeeId: lookupData }, data: { commentsSubscribedAt: existing.commentsSubscribedAt ? null : new Date() } })
+      } else {
+        if (muted) {
+          throw new GqlInputError("you can't subscribe to a stacker that you've muted")
+        }
+        await models.userSubscription.create({ data: { ...lookupData, commentsSubscribedAt: new Date() } })
+      }
+      return { id }
+    },
+    toggleMute: async (parent, { id }, { me, models }) => {
+      const lookupData = { muterId: Number(me.id), mutedId: Number(id) }
+      const where = { muterId_mutedId: lookupData }
+      const existing = await models.mute.findUnique({ where })
+      if (existing) {
+        await models.mute.delete({ where })
+      } else {
+        // check to see if current user is subscribed to the target user, and disallow mute if so
+        const subscription = await models.userSubscription.findUnique({
+          where: {
+            followerId_followeeId: {
+              followerId: Number(me.id),
+              followeeId: Number(id)
+            }
+          }
+        })
+        if (subscription?.postsSubscribedAt || subscription?.commentsSubscribedAt) {
+          throw new GqlInputError("you can't mute a stacker to whom you've subscribed")
+        }
+        await models.mute.create({ data: { ...lookupData } })
+      }
+      return { id }
+    }
+  },
+
+  User: {
+    privates: async (user, args, { me, models }) => {
+      if (!me || me.id !== user.id) {
+        return null
+      }
+
+      return user
+    },
+    optional: user => user,
+    meSubscriptionPosts: async (user, args, { me, models }) => {
+      if (!me) return false
+      if (typeof user.meSubscriptionPosts !== 'undefined') return user.meSubscriptionPosts
+
+      const subscription = await models.userSubscription.findUnique({
+        where: {
+          followerId_followeeId: {
+            followerId: Number(me.id),
+            followeeId: Number(user.id)
+          }
+        }
+      })
+
+      return !!subscription?.postsSubscribedAt
+    },
+    meSubscriptionComments: async (user, args, { me, models }) => {
+      if (!me) return false
+      if (typeof user.meSubscriptionComments !== 'undefined') return user.meSubscriptionComments
+
+      const subscription = await models.userSubscription.findUnique({
+        where: {
+          followerId_followeeId: {
+            followerId: Number(me.id),
+            followeeId: Number(user.id)
+          }
+        }
+      })
+
+      return !!subscription?.commentsSubscribedAt
+    },
+    meMute: async (user, args, { me, models }) => {
+      if (!me) return false
+      if (typeof user.meMute !== 'undefined') return user.meMute
+
+      return await isMuted({ models, muterId: me.id, mutedId: user.id })
+    },
+    since: async (user, args, { models }) => {
+      // get the user's first item
+      const item = await models.item.findFirst({
+        where: {
+          userId: user.id,
+          paidAt: { not: null }
+        },
+        orderBy: {
+          createdAt: 'asc'
+        }
+      })
+      return item?.id
+    },
+    nitems: async (user, { when, from, to }, { models }) => {
+      if (typeof user.nitems !== 'undefined') {
+        return user.nitems
+      }
+
+      const [gte, lte] = whenRange(when, from, to)
+      return await models.payIn.count({
+        where: {
+          userId: user.id,
+          payInStateChangedAt: {
+            gte,
+            lte
+          },
+          payInType: 'ITEM_CREATE',
+          payInState: 'PAID'
+        }
+      })
+    },
+    nterritories: async (user, { when, from, to }, { models }) => {
+      if (typeof user.nterritories !== 'undefined') {
+        return user.nterritories
+      }
+
+      const [gte, lte] = whenRange(when, from, to)
+      return await models.sub.count({
+        where: {
+          userId: user.id,
+          status: 'ACTIVE',
+          createdAt: {
+            gte,
+            lte
+          }
+        }
+      })
+    },
+    bio: async (user, args, { models, me }) => {
+      return getItem(user, { id: user.bioId }, { models, me })
+    }
+  },
+
+  UserPrivates: {
+    sats: async (user, args, { models, me }) => {
+      if (!me || me.id !== user.id) {
+        return 0
+      }
+      // floor each bucket once so `sats - credits === msatsToSats(user.msats)`
+      return msatsToSats(user.msats) + msatsToSats(user.mcredits)
+    },
+    credits: async (user, args, { models, me }) => {
+      if (!me || me.id !== user.id) {
+        return 0
+      }
+      return msatsToSats(user.mcredits)
+    },
+    authMethods,
+    hasInvites: async (user, args, { models }) => {
+      const invites = await models.user.findUnique({
+        where: { id: user.id }
+      }).invites({ take: 1 })
+
+      return invites.length > 0
+    },
+    nostrRelays: async (user, args, { models, me }) => {
+      if (user.id !== me.id) {
+        return []
+      }
+
+      const relays = await models.userNostrRelay.findMany({
+        where: { userId: user.id }
+      })
+
+      return relays?.map(r => r.nostrRelayAddr)
+    },
+    tipRandom: async (user, args, { me }) => {
+      if (!me || me.id !== user.id) {
+        return false
+      }
+      return !!user.tipRandomMin && !!user.tipRandomMax
+    },
+    freeCommentCount: (user) => {
+      // Reset counter if past reset date
+      if (user.freeCommentResetAt && new Date() >= new Date(user.freeCommentResetAt)) {
+        return 0
+      }
+      return user.freeCommentCount || 0
+    },
+    freeCommentsLeft: (user) => {
+      // Reset counter if past reset date
+      if (user.freeCommentResetAt && new Date() >= new Date(user.freeCommentResetAt)) {
+        return FREE_COMMENTS_PER_MONTH
+      }
+      return Math.max(0, FREE_COMMENTS_PER_MONTH - (user.freeCommentCount || 0))
+    },
+    hasSendWallet: (user) => {
+      // Return actual value for freebie eligibility (not hidden like UserOptional.hasSendWallet)
+      return user.hasSendWallet
+    }
+  },
+
+  UserOptional: {
+    streak: async (user, args, { models }) => {
+      if (user.hideCowboyHat) {
+        return null
+      }
+
+      return user.streak
+    },
+    hasSendWallet: async (user, args, { models }) => {
+      if (user.hideCowboyHat) {
+        return false
+      }
+      return user.hasSendWallet
+    },
+    hasRecvWallet: async (user, args, { models }) => {
+      if (user.hideCowboyHat) {
+        return false
+      }
+      return user.hasRecvWallet
+    },
+    maxStreak: async (user, args, { models }) => {
+      if (user.hideCowboyHat) {
+        return null
+      }
+
+      const [{ max }] = await models.$queryRaw`
+        SELECT MAX(COALESCE("endedAt"::date, (now() AT TIME ZONE 'America/Chicago')::date) - "startedAt"::date)
+        FROM "Streak" WHERE "userId" = ${user.id}
+        AND type = 'COWBOY_HAT'`
+      return max
+    },
+    isContributor: async (user, args, { me }) => {
+      // lazy init contributors only once
+      if (contributors.size === 0) {
+        await loadContributors(contributors)
+      }
+      return contributors.has(user.name)
+    },
+    stacked: async (user, { when, from, to }, { models, me }) => {
+      if ((!me || me.id !== user.id) && user.hideFromTopUsers) {
+        return null
+      }
+
+      if (typeof user.stacked !== 'undefined') {
+        return user.stacked
+      }
+
+      if (!when || when === 'forever') {
+        // forever
+        return ((user.stackedMsats && msatsToSats(user.stackedMsats)) || 0)
+      }
+
+      const [fromDate, toDate] = whenRange(when, from, to)
+      const granularity = timeUnitForRange([fromDate, toDate]).toUpperCase()
+      const [{ stacked }] = await models.$queryRaw`
+        SELECT sum("AggPayOut"."sumMtokens") as stacked
+        FROM "AggPayOut"
+        WHERE "AggPayOut"."userId" = ${user.id}
+        AND "AggPayOut"."timeBucket" >= ${fromDate}
+        AND "AggPayOut"."timeBucket" <= ${toDate}
+        AND "AggPayOut"."granularity" = ${granularity}::"AggGranularity"
+        AND "AggPayOut"."slice" = 'USER_BY_TYPE'
+        AND "AggPayOut"."payInType" NOT IN ('WITHDRAWAL', 'AUTO_WITHDRAWAL', 'PROXY_PAYMENT', 'BUY_CREDITS')
+        GROUP BY "AggPayOut"."userId"
+      `
+      return (stacked && msatsToSats(stacked)) || 0
+    },
+    spent: async (user, { when, from, to }, { models, me }) => {
+      if ((!me || me.id !== user.id) && user.hideFromTopUsers) {
+        return null
+      }
+
+      if (typeof user.spent !== 'undefined') {
+        return user.spent
+      }
+
+      const [fromDate, toDate] = whenRange(when, from, to)
+      const granularity = timeUnitForRange([fromDate, toDate]).toUpperCase()
+      const [{ spent }] = await models.$queryRaw`
+        SELECT sum("AggPayIn"."sumMcost") as spent
+        FROM "AggPayIn"
+        WHERE "AggPayIn"."userId" = ${user.id}
+        AND "AggPayIn"."timeBucket" >= ${fromDate}
+        AND "AggPayIn"."timeBucket" <= ${toDate}
+        AND "AggPayIn"."granularity" = ${granularity}::"AggGranularity"
+        AND "AggPayIn"."slice" = 'USER_BY_TYPE'
+        AND "AggPayIn"."payInType" NOT IN ('WITHDRAWAL', 'AUTO_WITHDRAWAL', 'PROXY_PAYMENT', 'BUY_CREDITS')
+        GROUP BY "AggPayIn"."userId"
+      `
+
+      return (spent && msatsToSats(spent)) || 0
+    },
+    referrals: async (user, { when, from, to }, { models, me }) => {
+      if ((!me || me.id !== user.id) && user.hideFromTopUsers) {
+        return null
+      }
+
+      if (typeof user.referrals !== 'undefined') {
+        return user.referrals
+      }
+
+      const [gte, lte] = whenRange(when, from, to)
+      return await models.user.count({
+        where: {
+          referrerId: user.id,
+          createdAt: {
+            gte,
+            lte
+          }
+        }
+      })
+    },
+    githubId: async (user, args, { me }) => {
+      if ((!me || me.id !== user.id) && user.hideGithub) {
+        return null
+      }
+      return user.githubId
+    },
+    twitterId: async (user, args, { models, me }) => {
+      if ((!me || me.id !== user.id) && user.hideTwitter) {
+        return null
+      }
+      return user.twitterId
+    },
+    nostrAuthPubkey: async (user, args, { models, me }) => {
+      if ((!me || me.id !== user.id) && user.hideNostr) {
+        return null
+      }
+      return user.nostrAuthPubkey
+    }
+  }
+}
+

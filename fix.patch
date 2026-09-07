@@ -1,0 +1,10 @@
+--- a/api/resolvers/user.js
++++ b/api/resolvers/user.js
+@@ -835,6 +835,7 @@
+   },
+ 
+   User: {
++    createdAt: user => user.createdAt ?? user.created_at,
+     privates: async (user, args, { me, models }) => {
+       if (!me || me.id !== user.id) {
+         return null
