@@ -72,6 +72,25 @@ class HTTPFlow(unittest.TestCase):
         self.assertNotIn('x-payment-address',hs)
         with self.ledger.connect() as db:self.assertEqual(db.execute('SELECT count(*) FROM quotes').fetchone()[0],0)
 
+    def test_quote_urls_follow_trusted_origin_without_restart(self):
+        origin = ['https://first.example.test']
+        self.app.origin_getter = lambda: origin[0]
+        self.assertTrue(self.request('/v1/clean', BODY)[2]['payment']['statusUrl'].startswith(origin[0] + '/'))
+        origin[0] = 'https://second.example.test'
+        status, headers, offer = self.request('/v1/clean', BODY, {'Host': 'untrusted.example.test'})
+        self.assertEqual(status, 402)
+        self.assertTrue(offer['payment']['completeUrl'].startswith(origin[0] + '/'))
+        self.assertTrue(headers['x-payment-status-url'].startswith(origin[0] + '/'))
+        self.assertEqual(headers['x-payment-amount'], '0.01')
+
+    def test_invalid_origin_never_exposes_a_payment_request(self):
+        self.app.origin_getter = lambda: 'https://bad.example.test/?redirect=elsewhere'
+        status, headers, result = self.request('/v1/clean', BODY)
+        self.assertEqual(status, 503)
+        self.assertEqual(result['error'], 'public_origin_unavailable')
+        self.assertNotIn('x-payment-address', headers)
+        self.assertNotIn('payment', result)
+
     def test_quote_rate_limit_precedes_external_rpc(self):
         self.rpc.fail=True
         for _ in range(20):self.assertEqual(self.request('/v1/clean',BODY)[0],503)
