@@ -5,10 +5,13 @@ and completion flow. The initial price is **0.01 XNO** per request, at most
 1,000 data rows and 100,000 UTF-8 CSV bytes. Trimming and exact duplicate removal
 are explicit options; required values and malformed rows are reported.
 
-The public API pilot is temporarily unavailable as of 2026-09-09 17:21 UTC.
-New paid API calls are paused while its transport is unavailable. Existing
-prepaid credit is preserved. Current availability is recorded in the
-[service thread](https://github.com/workesfm/JD/issues/1).
+The experimental pilot currently runs at:
+https://o56z5e-ip-54-255-245-80.tunnelmole.net
+
+On 2026-09-09 the API and its existing credit ledger moved to the operator
+host. Public health, 402 quoting and the original customer credit query passed
+after migration; the credit and tokens were preserved. Availability updates
+are posted in the [service thread](https://github.com/workesfm/JD/issues/1).
 
 The buyer [confirmed the real paid acceptance checks](https://github.com/workesfm/JD/issues/1#issuecomment-5575696956). The previous temporary tunnels lost their public routing despite local API health. This is a temporary public hostname for pilot testing; it may change after a connection restart. Existing credit survives hostname changes. Updates are posted in the same issue thread. No availability SLA is offered for the pilot.
 
