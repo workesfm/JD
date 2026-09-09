@@ -13,14 +13,23 @@ from core import Ledger, CheckedRPC, Problem, PRICE_RAW, MAX_BODY, clean
 
 
 class App:
-    def __init__(self, ledger, rpc, origin):
+    def __init__(self, ledger, rpc, origin, origin_getter=None):
         self.ledger, self.rpc = ledger, rpc
-        self.origin = origin.rstrip('/')
-        parsed = urlsplit(self.origin)
-        if parsed.scheme != 'https' or not parsed.hostname or parsed.path or parsed.username:
-            raise ValueError('a trusted HTTPS public origin is required')
+        self.origin = self.validate_origin(origin)
+        self.origin_getter = origin_getter
         self.lock = threading.Lock()
         self.refresh_locks, self.last_refresh = {}, {}
+
+    @staticmethod
+    def validate_origin(origin):
+        if not isinstance(origin, str):
+            raise ValueError('a trusted HTTPS public origin is required')
+        origin = origin.rstrip('/')
+        parsed = urlsplit(origin)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.path or
+                parsed.username or parsed.password or parsed.query or parsed.fragment):
+            raise ValueError('a trusted HTTPS public origin is required')
+        return origin
 
     def refresh(self, account_id, address):
         with self.lock:
@@ -33,8 +42,12 @@ class App:
             self.last_refresh[account_id] = time.monotonic()
 
     def payment_offer(self, quote):
-        status_url = self.origin + '/api/x402/status/' + quote['id']
-        complete_url = self.origin + '/api/x402/complete/' + quote['id']
+        try:
+            origin = self.validate_origin(self.origin_getter() if self.origin_getter else self.origin)
+        except Exception:
+            raise Problem(503, 'public_origin_unavailable')
+        status_url = origin + '/api/x402/status/' + quote['id']
+        complete_url = origin + '/api/x402/complete/' + quote['id']
         expires = datetime.fromtimestamp(quote['expires'], timezone.utc).isoformat()
         body = {'error':'payment_required','network':'nano:mainnet','price_raw':str(PRICE_RAW),
                 'requestHash':quote['request_hash'],
@@ -180,7 +193,8 @@ def main():
     pool = json.loads((folder/'address-pool.json').read_text())
     ledger = Ledger(folder/'ledger.sqlite3',pool['addresses'],bytes.fromhex(config['credit_token_secret']))
     os.chmod(folder/'ledger.sqlite3',0o600)
-    app = App(ledger,CheckedRPC(config['rpc_url'],config['verification_rpc_url']),config['public_origin'])
+    app = App(ledger,CheckedRPC(config['rpc_url'],config['verification_rpc_url']),config['public_origin'],
+              origin_getter=lambda: json.loads((folder/'config.json').read_text())['public_origin'])
     server = ThreadingHTTPServer(('127.0.0.1',int(config.get('port',8789))),handler_for(app))
     print(json.dumps({'event':'listening','host':'127.0.0.1','port':server.server_port,
                       'network':'nano:mainnet','financial_rpc_actions':False}),flush=True)
