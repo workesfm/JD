@@ -5,10 +5,12 @@ and completion flow. The initial price is **0.01 XNO** per request, at most
 1,000 data rows and 100,000 UTF-8 CSV bytes. Trimming and exact duplicate removal
 are explicit options; required values and malformed rows are reported.
 
-The experimental pilot is reachable at:
-https://1bqhdu-ip-47-239-116-165.tunnelmole.net
+The public API pilot is temporarily unavailable as of 2026-09-09 17:21 UTC.
+New paid API calls are paused while its transport is unavailable. Existing
+prepaid credit is preserved. Current availability is recorded in the
+[service thread](https://github.com/workesfm/JD/issues/1).
 
-The buyer [confirmed the real paid acceptance checks](https://github.com/workesfm/JD/issues/1#issuecomment-5575696956). The hostname above was restored on 2026-09-09 after the previous tunnel disconnected. This is a temporary public hostname for pilot testing; it may change after a connection restart. Existing credit survives hostname changes. Updates are posted in the same issue thread. No availability SLA is offered for the pilot.
+The buyer [confirmed the real paid acceptance checks](https://github.com/workesfm/JD/issues/1#issuecomment-5575696956). The previous temporary tunnels lost their public routing despite local API health. This is a temporary public hostname for pilot testing; it may change after a connection restart. Existing credit survives hostname changes. Updates are posted in the same issue thread. No availability SLA is offered for the pilot.
 
 ## Request and payment flow
 
@@ -53,8 +55,8 @@ Use `Authorization: Bearer <credit token>` and a unique `Idempotency-Key` of
 `/v1/clean`. Repeating that key with the same body retrieves the same result
 without another debit; changing the body under the same key is rejected.
 GET `/v1/credit` at the origin root with that token refreshes confirmed deposits
-and returns credit and usage. For the current hostname this is
-`https://1bqhdu-ip-47-239-116-165.tunnelmole.net/v1/credit`.
+and returns credit and usage. When the public pilot is available, this is
+`<current HTTPS origin>/v1/credit`.
 Do not append `/v1/credit` beneath `/api/x402/`. Confirmed incoming amounts, consumed usage and unused prepayment are
 recorded separately.
 
