@@ -6,7 +6,7 @@ and completion flow. The initial price is **0.01 XNO** per request, at most
 are explicit options; required values and malformed rows are reported.
 
 The experimental pilot is reachable at:
-https://xyabul-ip-89-185-26-178.tunnelmole.net
+https://xow1hv-ip-47-239-116-165.tunnelmole.net
 
 The buyer [confirmed the real paid acceptance checks](https://github.com/workesfm/JD/issues/1#issuecomment-5575696956). The hostname above was restored on 2026-09-09 after the previous tunnel disconnected. This is a temporary public hostname for pilot testing; it may change after a connection restart. Existing credit survives hostname changes. Updates are posted in the same issue thread. No availability SLA is offered for the pilot.
 
@@ -54,7 +54,7 @@ Use `Authorization: Bearer <credit token>` and a unique `Idempotency-Key` of
 without another debit; changing the body under the same key is rejected.
 GET `/v1/credit` at the origin root with that token refreshes confirmed deposits
 and returns credit and usage. For the current hostname this is
-`https://xyabul-ip-89-185-26-178.tunnelmole.net/v1/credit`.
+`https://xow1hv-ip-47-239-116-165.tunnelmole.net/v1/credit`.
 Do not append `/v1/credit` beneath `/api/x402/`. Confirmed incoming amounts, consumed usage and unused prepayment are
 recorded separately.
 
