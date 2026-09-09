@@ -6,7 +6,7 @@ and completion flow. The initial price is **0.01 XNO** per request, at most
 are explicit options; required values and malformed rows are reported.
 
 The experimental pilot is reachable at:
-https://xow1hv-ip-47-239-116-165.tunnelmole.net
+https://1bqhdu-ip-47-239-116-165.tunnelmole.net
 
 The buyer [confirmed the real paid acceptance checks](https://github.com/workesfm/JD/issues/1#issuecomment-5575696956). The hostname above was restored on 2026-09-09 after the previous tunnel disconnected. This is a temporary public hostname for pilot testing; it may change after a connection restart. Existing credit survives hostname changes. Updates are posted in the same issue thread. No availability SLA is offered for the pilot.
 
@@ -54,7 +54,7 @@ Use `Authorization: Bearer <credit token>` and a unique `Idempotency-Key` of
 without another debit; changing the body under the same key is rejected.
 GET `/v1/credit` at the origin root with that token refreshes confirmed deposits
 and returns credit and usage. For the current hostname this is
-`https://xow1hv-ip-47-239-116-165.tunnelmole.net/v1/credit`.
+`https://1bqhdu-ip-47-239-116-165.tunnelmole.net/v1/credit`.
 Do not append `/v1/credit` beneath `/api/x402/`. Confirmed incoming amounts, consumed usage and unused prepayment are
 recorded separately.
 
@@ -84,6 +84,11 @@ Set `CLEARTABLE_NANO_PRIVATE_DIR` to a protected directory outside the source tr
 Its `config.json` contains `public_origin`, `port`, `rpc_url`,
 `verification_rpc_url`, and `credit_token_secret`; `address-pool.json` contains the
 public receiving addresses. Keep the directory mode 0700 and secret files 0600.
+
+After a hostname change, update `public_origin` atomically in that trusted
+configuration file. Subsequent payment offers read the new HTTPS origin without
+restarting the API. Request Host headers do not select payment URLs; malformed
+origin configuration returns an error without a payment request.
 
 ```sh
 python3 -m unittest -v test_core.py test_http.py
