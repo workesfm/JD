@@ -5,8 +5,10 @@ and completion flow. The initial price is **0.01 XNO** per request, at most
 1,000 data rows and 100,000 UTF-8 CSV bytes. Trimming and exact duplicate removal
 are explicit options; required values and malformed rows are reported.
 
-The experimental pilot currently runs at:
-https://o56z5e-ip-54-255-245-80.tunnelmole.net
+The public API pilot is temporarily unavailable as of 2026-09-10.
+New paid API calls are paused until access and routing are verified again.
+The operator-host ledger is the canonical record; it has not been replaced
+with an older container copy. See the service thread for current availability.
 
 On 2026-09-09 the API and its existing credit ledger moved to the operator
 host. Public health, 402 quoting and the original customer credit query passed
