@@ -1,0 +1,27 @@
+{
+  "audit": {
+    "NA_glottocode_inventories": 1,
+    "inventories": 3020,
+    "marginal_rows_discarded": 1347,
+    "rows_read": 105484,
+    "selected_languages": 2175
+  },
+  "claim": 16,
+  "data_md5": "866d36bc83ab21bdb5837ffa63dc5993",
+  "data_sha256": "0816e698563b68ec6a309bab404a06dfb221d4334aa5ffcbc0c18f2bd01844b8",
+  "synthetic_edge_cases_passed": true,
+  "table_A": {
+    "ejectives_and_ng": 39,
+    "ejectives_without_ng": 226,
+    "n": 3020,
+    "neither": 914,
+    "ng_without_ejectives": 1841
+  },
+  "table_B": {
+    "ejectives_and_ng": 31,
+    "ejectives_without_ng": 147,
+    "n": 2175,
+    "neither": 643,
+    "ng_without_ejectives": 1354
+  }
+}
