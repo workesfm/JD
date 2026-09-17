@@ -1,0 +1,38 @@
+{
+  "claim": 1,
+  "range": [
+    1,
+    12
+  ],
+  "scope": "stated minimum only",
+  "terms": [
+    0,
+    1,
+    2,
+    9,
+    42,
+    221,
+    1242,
+    7299,
+    44866,
+    283733,
+    1851110,
+    12338897
+  ],
+  "memo_states_per_n": [
+    1,
+    3,
+    8,
+    26,
+    82,
+    247,
+    692,
+    1853,
+    4764,
+    11894,
+    29004,
+    69429
+  ],
+  "literal_crosscheck_n_0_through_7": true,
+  "terms_13_through_24_evaluated": false
+}
